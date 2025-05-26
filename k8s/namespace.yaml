@@ -1,0 +1,170 @@
+# Kubernetes Namespace Configuration for ReAgent
+# This creates an isolated namespace for all ReAgent resources
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: reagent
+  labels:
+    name: reagent
+    app: reagent
+    environment: production
+  annotations:
+    description: "ReAgent Multi-Agent Reasoning System"
+    owner: "platform-team"
+    
+---
+# Resource quota for the namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: reagent-quota
+  namespace: reagent
+spec:
+  hard:
+    requests.cpu: "100"
+    requests.memory: "200Gi"
+    limits.cpu: "200"
+    limits.memory: "400Gi"
+    persistentvolumeclaims: "10"
+    services: "20"
+    pods: "100"
+    
+---
+# Limit range for individual pods
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: reagent-limits
+  namespace: reagent
+spec:
+  limits:
+  - max:
+      cpu: "8"
+      memory: "32Gi"
+    min:
+      cpu: "100m"
+      memory: "128Mi"
+    default:
+      cpu: "1"
+      memory: "2Gi"
+    defaultRequest:
+      cpu: "500m"
+      memory: "1Gi"
+    type: Container
+  - max:
+      storage: "100Gi"
+    min:
+      storage: "1Gi"
+    type: PersistentVolumeClaim
+    
+---
+# Network policy for the namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: reagent-network-policy
+  namespace: reagent
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow ingress from pods in the same namespace
+  - from:
+    - podSelector: {}
+  # Allow ingress from ingress controller namespace
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8000
+  # Allow Prometheus scraping
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 8000
+    - protocol: TCP
+      port: 9090
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow communication within namespace
+  - to:
+    - podSelector: {}
+  # Allow external HTTPS (for OpenAI API)
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow external PostgreSQL if needed
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 5432
+      
+---
+# Service account for ReAgent pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reagent-sa
+  namespace: reagent
+  labels:
+    app: reagent
+automountServiceAccountToken: false
+
+---
+# Role for ReAgent pods
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: reagent-role
+  namespace: reagent
+rules:
+# Allow reading configmaps
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+# Allow reading secrets
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+# Allow reading pods (for health checks)
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+# Allow reading services
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list"]
+
+---
+# RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: reagent-rolebinding
+  namespace: reagent
+subjects:
+- kind: ServiceAccount
+  name: reagent-sa
+  namespace: reagent
+roleRef:
+  kind: Role
+  name: reagent-role
+  apiGroup: rbac.authorization.k8s.io

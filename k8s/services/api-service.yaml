@@ -1,0 +1,322 @@
+# Kubernetes Service for ReAgent API
+# This exposes the API deployment to other services and external traffic
+
+# Main API Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: reagent-api-service
+  namespace: reagent
+  labels:
+    app: reagent
+    component: api
+    tier: backend
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"  # For AWS
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "tcp"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
+spec:
+  type: LoadBalancer  # Change to ClusterIP if using Ingress
+  selector:
+    app: reagent-api
+    component: api
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: http
+    nodePort: 30080  # Optional: for NodePort access
+  - name: metrics
+    protocol: TCP
+    port: 9090
+    targetPort: metrics
+  sessionAffinity: None
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours
+  # External traffic policy
+  externalTrafficPolicy: Local  # Preserves source IP
+  # Health check configuration
+  healthCheckNodePort: 30081
+  
+---
+# Internal API Service (for internal cluster communication)
+apiVersion: v1
+kind: Service
+metadata:
+  name: reagent-api-internal
+  namespace: reagent
+  labels:
+    app: reagent
+    component: api
+    tier: backend
+    type: internal
+spec:
+  type: ClusterIP
+  selector:
+    app: reagent-api
+    component: api
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8000
+    targetPort: http
+  - name: metrics
+    protocol: TCP
+    port: 9090
+    targetPort: metrics
+  sessionAffinity: None
+  
+---
+# Headless Service for API (for direct pod communication)
+apiVersion: v1
+kind: Service
+metadata:
+  name: reagent-api-headless
+  namespace: reagent
+  labels:
+    app: reagent
+    component: api
+    tier: backend
+    type: headless
+spec:
+  clusterIP: None
+  selector:
+    app: reagent-api
+    component: api
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8000
+    targetPort: http
+    
+---
+# Service for API WebSocket connections
+apiVersion: v1
+kind: Service
+metadata:
+  name: reagent-api-websocket
+  namespace: reagent
+  labels:
+    app: reagent
+    component: api
+    tier: backend
+    type: websocket
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  type: ClusterIP  # Use with Ingress for WebSocket support
+  selector:
+    app: reagent-api
+    component: api
+  ports:
+  - name: websocket
+    protocol: TCP
+    port: 8000
+    targetPort: http
+    
+---
+# Ingress for API (optional - if not using LoadBalancer)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: reagent-api-ingress
+  namespace: reagent
+  labels:
+    app: reagent
+    component: api
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    nginx.ingress.kubernetes.io/websocket-services: "reagent-api-websocket"
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$binary_remote_addr"
+spec:
+  tls:
+  - hosts:
+    - api.reagent.example.com
+    secretName: reagent-tls
+  rules:
+  - host: api.reagent.example.com
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: reagent-api-internal
+            port:
+              name: http
+      - path: /ws
+        pathType: Prefix
+        backend:
+          service:
+            name: reagent-api-websocket
+            port:
+              name: websocket
+      - path: /metrics
+        pathType: Exact
+        backend:
+          service:
+            name: reagent-api-internal
+            port:
+              name: metrics
+              
+---
+# NetworkPolicy for API Service
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: reagent-api-network-policy
+  namespace: reagent
+  labels:
+    app: reagent
+    component: api
+spec:
+  podSelector:
+    matchLabels:
+      app: reagent-api
+      component: api
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow traffic from Ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8000
+  # Allow traffic from within the namespace
+  - from:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 8000
+  # Allow Prometheus scraping
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 9090
+  # Allow health checks from kubelet
+  - from:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: TCP
+      port: 8000
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow access to PostgreSQL
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+  # Allow access to Redis
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow access to Elasticsearch
+  - to:
+    - podSelector:
+        matchLabels:
+          app: elasticsearch
+    ports:
+    - protocol: TCP
+      port: 9200
+  # Allow external HTTPS (OpenAI API)
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: TCP
+      port: 443
+      
+---
+# ServiceMonitor for Prometheus Operator (optional)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: reagent-api-metrics
+  namespace: reagent
+  labels:
+    app: reagent
+    component: api
+    prometheus: kube-prometheus
+spec:
+  selector:
+    matchLabels:
+      app: reagent
+      component: api
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+    scheme: http
+    honorLabels: true
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_name]
+      targetLabel: pod
+    - sourceLabels: [__meta_kubernetes_namespace]
+      targetLabel: namespace
+    
+---
+# Endpoint Slice for custom load balancing (optional)
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: reagent-api-endpoints
+  namespace: reagent
+  labels:
+    app: reagent
+    component: api
+    kubernetes.io/service-name: reagent-api-service
+addressType: IPv4
+endpoints:
+  - addresses:
+      - "10.0.0.1"  # Auto-populated by Kubernetes
+    conditions:
+      ready: true
+      serving: true
+      terminating: false
+    targetRef:
+      kind: Pod
+      name: reagent-api-0
+      namespace: reagent
+ports:
+  - name: http
+    port: 8000
+    protocol: TCP

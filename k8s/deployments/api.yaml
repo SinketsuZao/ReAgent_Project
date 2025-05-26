@@ -1,0 +1,306 @@
+# Kubernetes Deployment for ReAgent API Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reagent-api
+  namespace: reagent
+  labels:
+    app: reagent
+    component: api
+    version: v1.0.0
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: reagent-api
+      component: api
+  template:
+    metadata:
+      labels:
+        app: reagent-api
+        component: api
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: reagent-sa
+      imagePullSecrets:
+      - name: docker-registry-secret
+      
+      # Init container to check database readiness
+      initContainers:
+      - name: wait-for-db
+        image: busybox:1.35
+        command: ['sh', '-c', 'until nc -z postgres-service.reagent.svc.cluster.local 5432; do echo waiting for postgres; sleep 2; done']
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+      
+      - name: wait-for-redis
+        image: busybox:1.35
+        command: ['sh', '-c', 'until nc -z redis-service.reagent.svc.cluster.local 6379; do echo waiting for redis; sleep 2; done']
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+            
+      - name: run-migrations
+        image: reagent-api:v1.0.0
+        command: ['alembic', 'upgrade', 'head']
+        envFrom:
+        - configMapRef:
+            name: reagent-config
+        - secretRef:
+            name: reagent-secrets
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      
+      containers:
+      - name: api
+        image: reagent-api:v1.0.0
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+          
+        # Environment variables from ConfigMap and Secrets
+        envFrom:
+        - configMapRef:
+            name: reagent-config
+        - secretRef:
+            name: reagent-secrets
+            
+        # Additional environment variables
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+              
+        # Resource limits
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+            
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+          
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 0
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 30
+          
+        # Volume mounts
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/configs
+          readOnly: true
+        - name: prompts-volume
+          mountPath: /app/prompts
+          readOnly: true
+        - name: logs-volume
+          mountPath: /app/logs
+        - name: tmp-volume
+          mountPath: /tmp
+          
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            
+      # Node selector
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
+        
+      # Tolerations
+      tolerations:
+      - key: "workload"
+        operator: "Equal"
+        value: "api"
+        effect: "NoSchedule"
+        
+      # Pod affinity rules
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - reagent-api
+              topologyKey: kubernetes.io/hostname
+              
+      # Volumes
+      volumes:
+      - name: config-volume
+        configMap:
+          name: reagent-config
+      - name: prompts-volume
+        configMap:
+          name: reagent-prompts
+      - name: logs-volume
+        emptyDir: {}
+      - name: tmp-volume
+        emptyDir: {}
+        
+      # Termination grace period
+      terminationGracePeriodSeconds: 60
+      
+---
+# Horizontal Pod Autoscaler for API
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: reagent-api-hpa
+  namespace: reagent
+  labels:
+    app: reagent
+    component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: reagent-api
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Pods
+    pods:
+      metric:
+        name: http_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "100"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 1
+        periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+      - type: Pods
+        value: 2
+        periodSeconds: 15
+      selectPolicy: Max
+      
+---
+# PodDisruptionBudget for API
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: reagent-api-pdb
+  namespace: reagent
+  labels:
+    app: reagent
+    component: api
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: reagent-api
+      component: api
+      
+---
+# VerticalPodAutoscaler for API (optional)
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: reagent-api-vpa
+  namespace: reagent
+  labels:
+    app: reagent
+    component: api
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: reagent-api
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+    - containerName: api
+      minAllowed:
+        cpu: 200m
+        memory: 512Mi
+      maxAllowed:
+        cpu: 4000m
+        memory: 8Gi
+      controlledResources: ["cpu", "memory"]

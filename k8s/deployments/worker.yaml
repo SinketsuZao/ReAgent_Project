@@ -1,0 +1,413 @@
+# Kubernetes Deployment for ReAgent Celery Workers
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reagent-worker
+  namespace: reagent
+  labels:
+    app: reagent
+    component: worker
+    version: v1.0.0
+spec:
+  replicas: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: reagent-worker
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: reagent-worker
+        component: worker
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9540"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: reagent-sa
+      imagePullSecrets:
+      - name: docker-registry-secret
+      
+      # Init containers
+      initContainers:
+      - name: wait-for-db
+        image: busybox:1.35
+        command: ['sh', '-c', 'until nc -z postgres-service.reagent.svc.cluster.local 5432; do echo waiting for postgres; sleep 2; done']
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+            
+      - name: wait-for-redis
+        image: busybox:1.35
+        command: ['sh', '-c', 'until nc -z redis-service.reagent.svc.cluster.local 6379; do echo waiting for redis; sleep 2; done']
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+            
+      - name: wait-for-elasticsearch
+        image: busybox:1.35
+        command: ['sh', '-c', 'until nc -z elasticsearch-service.reagent.svc.cluster.local 9200; do echo waiting for elasticsearch; sleep 2; done']
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+      
+      containers:
+      - name: worker
+        image: reagent-worker:v1.0.0
+        imagePullPolicy: Always
+        command: 
+        - celery
+        - -A
+        - worker.celery_app
+        - worker
+        - --loglevel=info
+        - --concurrency=4
+        - --max-tasks-per-child=100
+        - --time-limit=1800
+        - --soft-time-limit=1500
+        
+        # Environment variables
+        envFrom:
+        - configMapRef:
+            name: reagent-config
+        - secretRef:
+            name: reagent-secrets
+            
+        env:
+        - name: WORKER_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CELERY_WORKER_NAME
+          value: "$(WORKER_NAME)@%h"
+        - name: CELERY_WORKER_PREFETCH_MULTIPLIER
+          value: "1"
+        - name: CELERY_TASK_ACKS_LATE
+          value: "true"
+        - name: CELERY_TASK_REJECT_ON_WORKER_LOST
+          value: "true"
+          
+        # Resource limits
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 2Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
+            
+        # Health checks
+        livenessProbe:
+          exec:
+            command:
+            - celery
+            - -A
+            - worker.celery_app
+            - inspect
+            - ping
+            - -d
+            - "$(WORKER_NAME)@%h"
+            - --timeout
+            - "10"
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 15
+          failureThreshold: 3
+          
+        readinessProbe:
+          exec:
+            command:
+            - celery
+            - -A
+            - worker.celery_app
+            - inspect
+            - active
+            - -d
+            - "$(WORKER_NAME)@%h"
+            - --timeout
+            - "5"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 3
+          
+        # Volume mounts
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/configs
+          readOnly: true
+        - name: prompts-volume
+          mountPath: /app/prompts
+          readOnly: true
+        - name: worker-data
+          mountPath: /app/data
+        - name: tmp-volume
+          mountPath: /tmp
+          
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            
+      # Celery Beat (scheduler) sidecar - only run on one pod
+      - name: celery-beat
+        image: reagent-worker:v1.0.0
+        imagePullPolicy: Always
+        command:
+        - sh
+        - -c
+        - |
+          if [ "$HOSTNAME" = "reagent-worker-0" ]; then
+            echo "Starting Celery Beat on primary worker"
+            celery -A worker.celery_app beat --loglevel=info
+          else
+            echo "Not primary worker, sleeping"
+            while true; do sleep 3600; done
+          fi
+        
+        envFrom:
+        - configMapRef:
+            name: reagent-config
+        - secretRef:
+            name: reagent-secrets
+            
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+            
+        volumeMounts:
+        - name: beat-schedule
+          mountPath: /app/celerybeat-schedule
+          
+      # Flower monitoring (optional)
+      - name: flower
+        image: reagent-worker:v1.0.0
+        imagePullPolicy: Always
+        command:
+        - celery
+        - -A
+        - worker.celery_app
+        - flower
+        - --port=5555
+        - --url_prefix=flower
+        
+        ports:
+        - name: flower
+          containerPort: 5555
+          protocol: TCP
+          
+        envFrom:
+        - configMapRef:
+            name: reagent-config
+        - secretRef:
+            name: reagent-secrets
+            
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+            
+        livenessProbe:
+          httpGet:
+            path: /flower/healthcheck
+            port: flower
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          
+      # Node selector for workers
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
+        workload-type: "cpu-intensive"
+        
+      # Tolerations
+      tolerations:
+      - key: "workload"
+        operator: "Equal"
+        value: "worker"
+        effect: "NoSchedule"
+        
+      # Pod affinity rules
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - reagent-worker
+              topologyKey: kubernetes.io/hostname
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 50
+            preference:
+              matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values:
+                - m5.2xlarge
+                - m5.4xlarge
+                - c5.2xlarge
+                - c5.4xlarge
+                
+      # Volumes
+      volumes:
+      - name: config-volume
+        configMap:
+          name: reagent-config
+      - name: prompts-volume
+        configMap:
+          name: reagent-prompts
+      - name: worker-data
+        emptyDir: {}
+      - name: tmp-volume
+        emptyDir: {}
+      - name: beat-schedule
+        persistentVolumeClaim:
+          claimName: celery-beat-pvc
+          
+      # Termination grace period
+      terminationGracePeriodSeconds: 300  # 5 minutes for task completion
+      
+---
+# PersistentVolumeClaim for Celery Beat
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: celery-beat-pvc
+  namespace: reagent
+  labels:
+    app: reagent
+    component: worker
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: standard
+  
+---
+# HorizontalPodAutoscaler for Workers
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: reagent-worker-hpa
+  namespace: reagent
+  labels:
+    app: reagent
+    component: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: reagent-worker
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: External
+    external:
+      metric:
+        name: celery_queue_length
+        selector:
+          matchLabels:
+            queue_name: "celery"
+      target:
+        type: AverageValue
+        averageValue: "10"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 25
+        periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 4
+        periodSeconds: 30
+      selectPolicy: Max
+      
+---
+# PodDisruptionBudget for Workers
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: reagent-worker-pdb
+  namespace: reagent
+  labels:
+    app: reagent
+    component: worker
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: reagent-worker
+      component: worker
+      
+---
+# Service for Flower UI
+apiVersion: v1
+kind: Service
+metadata:
+  name: flower-service
+  namespace: reagent
+  labels:
+    app: reagent
+    component: flower
+spec:
+  selector:
+    app: reagent-worker
+    component: worker
+  ports:
+  - name: flower
+    protocol: TCP
+    port: 5555
+    targetPort: flower
+  type: ClusterIP

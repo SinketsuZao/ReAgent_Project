@@ -1,0 +1,423 @@
+# Alert Rules for ReAgent System
+# These rules define when to trigger alerts based on metrics
+
+groups:
+  # System Health Alerts
+  - name: system_health
+    interval: 30s
+    rules:
+      # High CPU usage
+      - alert: HighCPUUsage
+        expr: |
+          (100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 85% (current value: {{ $value }}%)"
+          runbook_url: "https://docs.reagent.ai/runbooks/high-cpu"
+
+      # High memory usage
+      - alert: HighMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 90% (current value: {{ $value }}%)"
+
+      # Disk space running low
+      - alert: DiskSpaceRunningLow
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 15
+        for: 5m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Disk space is below 15% (current value: {{ $value }}%)"
+
+  # ReAgent API Alerts
+  - name: reagent_api
+    interval: 30s
+    rules:
+      # API down
+      - alert: ReAgentAPIDown
+        expr: up{job="reagent-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "ReAgent API is down"
+          description: "ReAgent API instance {{ $labels.instance }} has been down for more than 1 minute"
+          impact: "Questions cannot be processed"
+          action: "Check API logs and restart if necessary"
+
+      # High API error rate
+      - alert: HighAPIErrorRate
+        expr: |
+          sum(rate(reagent_api_requests_total{status=~"5.."}[5m])) by (instance)
+          /
+          sum(rate(reagent_api_requests_total[5m])) by (instance)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High API error rate on {{ $labels.instance }}"
+          description: "Error rate is above 5% (current value: {{ $value | humanizePercentage }})"
+
+      # API response time
+      - alert: SlowAPIResponse
+        expr: |
+          histogram_quantile(0.95, 
+            sum(rate(reagent_api_request_duration_seconds_bucket[5m])) by (le, instance)
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Slow API responses on {{ $labels.instance }}"
+          description: "95th percentile response time is above 5 seconds (current value: {{ $value }}s)"
+
+  # Question Processing Alerts
+  - name: question_processing
+    interval: 30s
+    rules:
+      # High question failure rate
+      - alert: HighQuestionFailureRate
+        expr: |
+          sum(rate(reagent_questions_processed_total{status="failure"}[15m]))
+          /
+          sum(rate(reagent_questions_processed_total[15m]))
+          > 0.20
+        for: 15m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "High question failure rate"
+          description: "More than 20% of questions are failing (current rate: {{ $value | humanizePercentage }})"
+          
+      # Question processing timeout
+      - alert: QuestionProcessingTimeout
+        expr: |
+          sum(increase(reagent_questions_processed_total{status="timeout"}[15m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "Multiple question timeouts detected"
+          description: "{{ $value }} questions have timed out in the last 15 minutes"
+
+      # Excessive backtracking
+      - alert: ExcessiveBacktracking
+        expr: |
+          sum(rate(reagent_backtracking_total[15m])) by (agent) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "Excessive backtracking by {{ $labels.agent }}"
+          description: "Agent {{ $labels.agent }} is backtracking more than 0.5 times per minute"
+
+  # Agent Performance Alerts
+  - name: agent_performance
+    interval: 30s
+    rules:
+      # Agent processing time
+      - alert: SlowAgentProcessing
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(reagent_agent_processing_seconds_bucket[5m])) by (le, agent)
+          ) > 30
+        for: 10m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "Agent {{ $labels.agent }} is processing slowly"
+          description: "95th percentile processing time is above 30 seconds (current: {{ $value }}s)"
+
+      # Agent reliability degraded
+      - alert: AgentReliabilityDegraded
+        expr: |
+          reagent_agent_reliability_score < 0.7
+        for: 15m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "Agent {{ $labels.agent }} reliability degraded"
+          description: "Reliability score is below 0.7 (current: {{ $value }})"
+
+      # Agent message backlog
+      - alert: AgentMessageBacklog
+        expr: |
+          reagent_message_queue_size > 1000
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Large message queue backlog"
+          description: "Message queue has {{ $value }} pending messages"
+
+  # LLM Usage Alerts
+  - name: llm_usage
+    interval: 60s
+    rules:
+      # High token usage
+      - alert: HighTokenUsage
+        expr: |
+          sum(increase(reagent_llm_tokens_used[1h])) by (agent) > 100000
+        for: 5m
+        labels:
+          severity: warning
+          team: ml
+          cost_impact: high
+        annotations:
+          summary: "High token usage by {{ $labels.agent }}"
+          description: "Agent {{ $labels.agent }} used {{ $value }} tokens in the last hour"
+
+      # LLM API errors
+      - alert: LLMAPIErrors
+        expr: |
+          sum(rate(reagent_llm_api_calls_total{status!="success"}[5m])) by (agent) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "LLM API errors for {{ $labels.agent }}"
+          description: "{{ $value }} errors per second in LLM API calls"
+
+      # Rate limiting
+      - alert: LLMRateLimiting
+        expr: |
+          sum(increase(reagent_llm_api_calls_total{status="rate_limit"}[5m])) by (agent) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "LLM rate limiting for {{ $labels.agent }}"
+          description: "Agent {{ $labels.agent }} hit rate limits {{ $value }} times"
+
+  # Database Alerts
+  - name: database
+    interval: 30s
+    rules:
+      # PostgreSQL down
+      - alert: PostgreSQLDown
+        expr: up{job="postgresql"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: infrastructure
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL database is unreachable"
+          impact: "System cannot store or retrieve data"
+
+      # High database connections
+      - alert: HighDatabaseConnections
+        expr: |
+          pg_stat_database_numbackends{datname="reagent_db"} 
+          / 
+          pg_settings_max_connections
+          > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "High database connection usage"
+          description: "Database connection usage is above 80% ({{ $value | humanizePercentage }})"
+
+      # Slow queries
+      - alert: SlowDatabaseQueries
+        expr: |
+          rate(pg_stat_statements_mean_time_seconds[5m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Slow database queries detected"
+          description: "Average query time is above 1 second (current: {{ $value }}s)"
+
+  # Redis Alerts
+  - name: redis
+    interval: 30s
+    rules:
+      # Redis down
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: infrastructure
+        annotations:
+          summary: "Redis is down"
+          description: "Redis cache is unreachable"
+          impact: "Message passing and caching unavailable"
+
+      # High Redis memory usage
+      - alert: HighRedisMemoryUsage
+        expr: |
+          redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "High Redis memory usage"
+          description: "Redis memory usage is above 90% ({{ $value | humanizePercentage }})"
+
+      # Redis connection errors
+      - alert: RedisConnectionErrors
+        expr: |
+          rate(redis_rejected_connections_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "Redis rejecting connections"
+          description: "Redis is rejecting {{ $value }} connections per second"
+
+  # Elasticsearch Alerts
+  - name: elasticsearch
+    interval: 30s
+    rules:
+      # Elasticsearch down
+      - alert: ElasticsearchDown
+        expr: up{job="elasticsearch"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: infrastructure
+        annotations:
+          summary: "Elasticsearch is down"
+          description: "Elasticsearch is unreachable"
+          impact: "Document retrieval unavailable"
+
+      # Elasticsearch cluster health
+      - alert: ElasticsearchClusterUnhealthy
+        expr: |
+          elasticsearch_cluster_health_status{color="red"} == 1
+        for: 5m
+        labels:
+          severity: critical
+          team: infrastructure
+        annotations:
+          summary: "Elasticsearch cluster is unhealthy"
+          description: "Elasticsearch cluster status is RED"
+
+  # Celery Worker Alerts
+  - name: celery_workers
+    interval: 30s
+    rules:
+      # No active workers
+      - alert: NoCeleryWorkers
+        expr: |
+          sum(up{job="reagent-workers"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "No Celery workers available"
+          description: "All Celery workers are down"
+          impact: "Async tasks cannot be processed"
+
+      # High task failure rate
+      - alert: HighTaskFailureRate
+        expr: |
+          sum(rate(reagent_task_completions_total{status="failed"}[15m]))
+          /
+          sum(rate(reagent_task_completions_total[15m]))
+          > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High Celery task failure rate"
+          description: "Task failure rate is above 10% ({{ $value | humanizePercentage }})"
+
+  # Resource Exhaustion Alerts
+  - name: resource_exhaustion
+    interval: 60s
+    rules:
+      # Token budget exhaustion
+      - alert: TokenBudgetExhaustion
+        expr: |
+          sum(increase(reagent_llm_tokens_used[1h])) by (question_id)
+          > 
+          20000  # Default token budget per question
+        for: 5m
+        labels:
+          severity: warning
+          team: ml
+          cost_impact: high
+        annotations:
+          summary: "Token budget exceeded for question"
+          description: "Question {{ $labels.question_id }} exceeded token budget (used: {{ $value }})"
+
+      # Checkpoint storage full
+      - alert: CheckpointStorageFull
+        expr: |
+          sum(reagent_checkpoints_total) by (agent) > 1000
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Too many checkpoints for {{ $labels.agent }}"
+          description: "Agent {{ $labels.agent }} has {{ $value }} checkpoints stored"
+
+  # Business Logic Alerts
+  - name: business_logic
+    interval: 60s
+    rules:
+      # Low confidence answers
+      - alert: LowConfidenceAnswers
+        expr: |
+          histogram_quantile(0.5, 
+            sum(rate(reagent_answer_confidence_bucket[1h])) by (le)
+          ) < 0.7
+        for: 30m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "Median answer confidence is low"
+          description: "50% of answers have confidence below 0.7 (median: {{ $value }})"
+
+      # Conflict resolution failures
+      - alert: ConflictResolutionFailures
+        expr: |
+          sum(increase(reagent_conflicts_detected_total[1h])) by (agent)
+          -
+          sum(increase(reagent_conflicts_resolved_total[1h])) by (agent)
+          > 10
+        for: 15m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "Unresolved conflicts for {{ $labels.agent }}"
+          description: "{{ $value }} conflicts remain unresolved in the last hour"

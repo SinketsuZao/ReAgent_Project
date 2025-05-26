@@ -1,0 +1,167 @@
+# Grafana Datasource Configuration for Prometheus
+# This file is used for provisioning datasources in Grafana
+
+apiVersion: 1
+
+# List of datasources to insert/update
+datasources:
+  # Prometheus datasource
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    version: 1
+    editable: true
+    uid: prometheus-reagent
+    jsonData:
+      # Prometheus type (Prometheus, Cortex, Thanos, etc.)
+      prometheusType: Prometheus
+      prometheusVersion: 2.40.0
+      
+      # Timeout settings
+      timeout: 60
+      queryTimeout: 60
+      httpMethod: POST
+      
+      # Enable metric and label name lookup
+      manageAlerts: true
+      
+      # Interval settings
+      timeInterval: 15s
+      scrapeInterval: 15s
+      
+      # Query settings
+      disableMetricsLookup: false
+      
+      # Custom query parameters
+      customQueryParameters: ""
+      
+      # Exemplar configuration
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+          
+      # Incremental querying (for better performance)
+      incrementalQuerying: true
+      incrementalQueryOverlapWindow: 10m
+      
+      # Cache configuration
+      cacheLevel: 'High'
+      
+      # Enable recording rules
+      recordingRulesEnabled: true
+
+  # Additional Prometheus for long-term storage (if using Thanos/Cortex)
+  - name: Prometheus-LongTerm
+    type: prometheus
+    access: proxy
+    url: http://thanos-query:9090
+    version: 1
+    editable: true
+    uid: prometheus-longterm
+    jsonData:
+      prometheusType: Thanos
+      timeout: 120
+      queryTimeout: 120
+      httpMethod: POST
+      manageAlerts: false
+      timeInterval: 1m
+
+  # Loki for logs (if using)
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    version: 1
+    editable: true
+    uid: loki-reagent
+    jsonData:
+      timeout: 60
+      maxLines: 1000
+      derivedFields:
+        - datasourceUid: tempo
+          matcherRegex: "trace_id=(\\w+)"
+          name: TraceID
+          url: '$${__value.raw}'
+
+  # Tempo for traces (if using)
+  - name: Tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    version: 1
+    editable: true
+    uid: tempo
+    jsonData:
+      nodeGraph:
+        enabled: true
+      tracesToLogs:
+        datasourceUid: loki
+        filterByTraceID: true
+        filterBySpanID: false
+        mapTagNamesEnabled: true
+        mappedTags:
+          - key: service.name
+            value: service
+      search:
+        hide: false
+      lokiSearch:
+        datasourceUid: loki
+      serviceMap:
+        datasourceUid: prometheus-reagent
+
+  # PostgreSQL datasource
+  - name: PostgreSQL
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: reagent_db
+    user: reagent_user
+    editable: true
+    uid: postgres-reagent
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}
+    jsonData:
+      sslmode: 'disable'
+      maxOpenConns: 0
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+      postgresVersion: 1500
+      timescaledb: false
+
+  # Redis datasource (using Redis plugin)
+  - name: Redis
+    type: redis-datasource
+    access: proxy
+    url: redis://redis:6379
+    editable: true
+    uid: redis-reagent
+    jsonData:
+      poolSize: 10
+      timeout: 10
+      pingInterval: 0
+      pipelineWindow: 0
+      
+  # Elasticsearch datasource
+  - name: Elasticsearch
+    type: elasticsearch
+    access: proxy
+    url: http://elasticsearch:9200
+    database: "[reagent-]YYYY.MM.DD"
+    editable: true
+    uid: elasticsearch-reagent
+    jsonData:
+      esVersion: "8.11.0"
+      includeFrozen: false
+      logLevelField: ''
+      logMessageField: ''
+      maxConcurrentShardRequests: 5
+      timeField: "@timestamp"
+      timeInterval: "10s"
+      interval: "Daily"
+
+# Delete datasources that are no longer needed
+deleteDatasources:
+  - name: Old-Prometheus
+    orgId: 1

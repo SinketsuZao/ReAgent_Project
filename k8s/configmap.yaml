@@ -1,0 +1,284 @@
+# ConfigMap for ReAgent Application Configuration
+# This contains all non-sensitive configuration data
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reagent-config
+  namespace: reagent
+  labels:
+    app: reagent
+    component: config
+data:
+  # Environment configuration
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  DEBUG: "false"
+  
+  # API Configuration
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  API_WORKERS: "4"
+  API_TIMEOUT: "300"
+  CORS_ORIGINS: "*"
+  MAX_REQUEST_SIZE: "10485760"  # 10MB
+  
+  # Database Configuration (non-sensitive)
+  POSTGRES_HOST: "postgres-service.reagent.svc.cluster.local"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "reagent_db"
+  POSTGRES_USER: "reagent_user"
+  DATABASE_POOL_SIZE: "20"
+  DATABASE_MAX_OVERFLOW: "40"
+  DATABASE_POOL_TIMEOUT: "30"
+  
+  # Redis Configuration
+  REDIS_HOST: "redis-service.reagent.svc.cluster.local"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+  REDIS_MAX_CONNECTIONS: "50"
+  REDIS_SOCKET_KEEPALIVE: "true"
+  REDIS_SOCKET_KEEPALIVE_OPTIONS: "1:1:3"
+  
+  # Elasticsearch Configuration
+  ELASTICSEARCH_HOST: "elasticsearch-service.reagent.svc.cluster.local"
+  ELASTICSEARCH_PORT: "9200"
+  ELASTICSEARCH_INDEX_PREFIX: "reagent"
+  ELASTICSEARCH_REPLICAS: "1"
+  ELASTICSEARCH_SHARDS: "5"
+  
+  # Celery Configuration
+  CELERY_BROKER_URL: "redis://redis-service.reagent.svc.cluster.local:6379/0"
+  CELERY_RESULT_BACKEND: "redis://redis-service.reagent.svc.cluster.local:6379/1"
+  CELERY_TASK_SERIALIZER: "json"
+  CELERY_RESULT_SERIALIZER: "json"
+  CELERY_ACCEPT_CONTENT: "json"
+  CELERY_TIMEZONE: "UTC"
+  CELERY_ENABLE_UTC: "true"
+  CELERY_TASK_TRACK_STARTED: "true"
+  CELERY_TASK_TIME_LIMIT: "1800"  # 30 minutes
+  CELERY_TASK_SOFT_TIME_LIMIT: "1500"  # 25 minutes
+  CELERY_WORKER_CONCURRENCY: "4"
+  CELERY_WORKER_PREFETCH_MULTIPLIER: "1"
+  
+  # LLM Configuration
+  LLM_MODEL: "gpt-4"
+  LLM_TEMPERATURE: "0.7"
+  LLM_MAX_TOKENS: "2000"
+  LLM_REQUEST_TIMEOUT: "60"
+  LLM_MAX_RETRIES: "3"
+  LLM_RETRY_DELAY: "1"
+  
+  # Agent Configuration
+  AGENT_QUESTION_DECOMPOSER_TEMPERATURE: "0.8"
+  AGENT_RETRIEVER_TEMPERATURE: "0.6"
+  AGENT_VERIFIER_TEMPERATURE: "0.6"
+  AGENT_ASSEMBLER_TEMPERATURE: "0.7"
+  AGENT_SUPERVISOR_TEMPERATURE: "0.6"
+  AGENT_CONTROLLER_TEMPERATURE: "0.7"
+  
+  # System Configuration
+  MAX_QUESTION_LENGTH: "5000"
+  MAX_PROCESSING_TIME: "600"  # 10 minutes
+  MAX_BACKTRACK_DEPTH: "5"
+  CHECKPOINT_RETENTION_HOURS: "24"
+  MAX_TOKEN_BUDGET_PER_QUESTION: "50000"
+  
+  # Monitoring Configuration
+  METRICS_ENABLED: "true"
+  METRICS_PORT: "9090"
+  HEALTH_CHECK_INTERVAL: "30"
+  ENABLE_TRACING: "true"
+  JAEGER_AGENT_HOST: "jaeger-agent.monitoring.svc.cluster.local"
+  JAEGER_AGENT_PORT: "6831"
+  
+  # Feature Flags
+  ENABLE_CACHING: "true"
+  CACHE_TTL: "3600"  # 1 hour
+  ENABLE_RATE_LIMITING: "true"
+  RATE_LIMIT_PER_MINUTE: "60"
+  ENABLE_QUESTION_HISTORY: "true"
+  ENABLE_AUDIT_LOGGING: "true"
+  
+---
+# ConfigMap for Prometheus Scrape Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: reagent
+  labels:
+    app: reagent
+    component: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    
+    scrape_configs:
+      - job_name: 'reagent-api'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - reagent
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: reagent-api
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+            
+      - job_name: 'reagent-workers'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - reagent
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: reagent-worker
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+            
+---
+# ConfigMap for Nginx Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: reagent
+  labels:
+    app: reagent
+    component: nginx
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+    
+    events {
+        worker_connections 1024;
+        use epoll;
+        multi_accept on;
+    }
+    
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+        
+        access_log /var/log/nginx/access.log main;
+        
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+        
+        # Gzip compression
+        gzip on;
+        gzip_vary on;
+        gzip_proxied any;
+        gzip_comp_level 6;
+        gzip_types text/plain text/css text/xml text/javascript application/json application/javascript application/xml+rss application/rss+xml application/atom+xml image/svg+xml;
+        
+        # Rate limiting zones
+        limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+        limit_conn_zone $binary_remote_addr zone=conn_limit:10m;
+        
+        upstream reagent_api {
+            least_conn;
+            server reagent-api-service:8000 max_fails=3 fail_timeout=30s;
+        }
+        
+        server {
+            listen 80;
+            server_name _;
+            
+            location /health {
+                access_log off;
+                return 200 "healthy\n";
+                add_header Content-Type text/plain;
+            }
+            
+            location /api/ {
+                limit_req zone=api_limit burst=20 nodelay;
+                limit_conn conn_limit 10;
+                
+                proxy_pass http://reagent_api;
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                
+                proxy_connect_timeout 60s;
+                proxy_send_timeout 60s;
+                proxy_read_timeout 60s;
+            }
+            
+            location /ws {
+                proxy_pass http://reagent_api;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            }
+            
+            location /metrics {
+                allow 10.0.0.0/8;
+                deny all;
+                proxy_pass http://reagent_api/metrics;
+            }
+        }
+    }
+    
+---
+# ConfigMap for Agent Prompts
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reagent-prompts
+  namespace: reagent
+  labels:
+    app: reagent
+    component: prompts
+data:
+  prompts.yaml: |
+    # Compact version of prompts for K8s ConfigMap
+    # Full prompts are loaded from the main prompts.yaml file
+    
+    question_decomposer:
+      temperature: 0.8
+      max_tokens: 1500
+      
+    retriever:
+      temperature: 0.6
+      max_tokens: 2000
+      
+    verifier:
+      temperature: 0.6
+      max_tokens: 1500
+      
+    answer_assembler:
+      temperature: 0.7
+      max_tokens: 2000
+      
+    supervisor:
+      temperature: 0.6
+      max_tokens: 1500
+      
+    controller:
+      temperature: 0.7
+      max_tokens: 1000

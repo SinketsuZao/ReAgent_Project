@@ -1,0 +1,260 @@
+{
+  "simple_factual": [
+    {
+      "question": "What is the capital of France?",
+      "expected_answer": "Paris",
+      "type": "factual",
+      "difficulty": "easy",
+      "tags": ["geography", "europe"]
+    },
+    {
+      "question": "When was the United Nations founded?",
+      "expected_answer": "1945",
+      "type": "factual",
+      "difficulty": "easy",
+      "tags": ["history", "organizations"]
+    },
+    {
+      "question": "What is the chemical symbol for gold?",
+      "expected_answer": "Au",
+      "type": "factual",
+      "difficulty": "easy",
+      "tags": ["science", "chemistry"]
+    }
+  ],
+  
+  "complex_multihop": [
+    {
+      "question": "Which U.S. state has a capital city whose population is smaller than the state's largest city, given that this state hosted the 1984 Summer Olympics?",
+      "expected_answer": "California",
+      "reasoning_steps": [
+        "Identify the state that hosted the 1984 Summer Olympics",
+        "Find the capital of that state",
+        "Find the largest city in that state",
+        "Compare populations"
+      ],
+      "type": "multi-hop",
+      "difficulty": "hard",
+      "tags": ["geography", "olympics", "demographics"]
+    },
+    {
+      "question": "What is the name of the university whose main campus is in the city that served as the capital of the Confederate States during the American Civil War?",
+      "expected_answer": "Virginia Commonwealth University (or University of Richmond)",
+      "reasoning_steps": [
+        "Identify the capital of the Confederate States",
+        "Find universities in that city",
+        "Identify the main universities"
+      ],
+      "type": "multi-hop",
+      "difficulty": "hard",
+      "tags": ["history", "education", "geography"]
+    },
+    {
+      "question": "Who was the president of the United States when the company that created the iPhone was founded?",
+      "expected_answer": "Gerald Ford",
+      "reasoning_steps": [
+        "Identify the company that created the iPhone",
+        "Find when that company was founded",
+        "Identify the US president during that time"
+      ],
+      "type": "multi-hop",
+      "difficulty": "medium",
+      "tags": ["technology", "history", "politics"]
+    }
+  ],
+  
+  "comparative": [
+    {
+      "question": "Which has a larger population: the capital of Japan or the capital of Mexico?",
+      "expected_answer": "Tokyo (capital of Japan) has a larger population than Mexico City",
+      "type": "comparative",
+      "difficulty": "medium",
+      "tags": ["geography", "demographics"]
+    },
+    {
+      "question": "Is the Amazon River longer than the Nile River?",
+      "expected_answer": "The Nile River is generally considered longer than the Amazon River",
+      "type": "comparative",
+      "difficulty": "medium",
+      "tags": ["geography", "nature"]
+    },
+    {
+      "question": "Which was invented first: the telephone or the light bulb?",
+      "expected_answer": "The telephone (1876) was invented before the practical incandescent light bulb (1879)",
+      "type": "comparative",
+      "difficulty": "medium",
+      "tags": ["history", "technology"]
+    }
+  ],
+  
+  "temporal": [
+    {
+      "question": "What major world event was happening when the Titanic sank?",
+      "expected_answer": "No major world war was occurring; it was 1912, two years before World War I",
+      "type": "temporal",
+      "difficulty": "medium",
+      "tags": ["history"]
+    },
+    {
+      "question": "Which came first: the founding of Harvard University or the Salem Witch Trials?",
+      "expected_answer": "Harvard University (1636) was founded before the Salem Witch Trials (1692-1693)",
+      "type": "temporal",
+      "difficulty": "medium",
+      "tags": ["history", "education"]
+    },
+    {
+      "question": "Was the Great Wall of China built before or after the Roman Colosseum?",
+      "expected_answer": "The Great Wall of China (started 7th century BC) was built before the Roman Colosseum (72-80 AD)",
+      "type": "temporal",
+      "difficulty": "medium",
+      "tags": ["history", "architecture"]
+    }
+  ],
+  
+  "causal": [
+    {
+      "question": "Why does the Moon appear to change shape throughout the month?",
+      "expected_answer": "The Moon appears to change shape due to the changing angle of sunlight hitting it as it orbits Earth, creating different phases",
+      "type": "causal",
+      "difficulty": "medium",
+      "tags": ["science", "astronomy"]
+    },
+    {
+      "question": "What caused the extinction of the dinosaurs?",
+      "expected_answer": "The most widely accepted theory is that a massive asteroid impact approximately 66 million years ago caused the extinction",
+      "type": "causal",
+      "difficulty": "medium",
+      "tags": ["science", "paleontology"]
+    },
+    {
+      "question": "Why did the Roman Empire fall?",
+      "expected_answer": "Multiple factors including economic troubles, overexpansion, invasions by barbarian tribes, and political instability",
+      "type": "causal",
+      "difficulty": "hard",
+      "tags": ["history"]
+    }
+  ],
+  
+  "conflicting_information": [
+    {
+      "question": "What is the tallest mountain in the world?",
+      "potential_conflicts": [
+        "Mount Everest (by height above sea level)",
+        "Mauna Kea (by total height from base)",
+        "Chimborazo (by distance from Earth's center)"
+      ],
+      "expected_answer": "Mount Everest is the tallest mountain above sea level at 8,849 meters",
+      "type": "potentially_conflicting",
+      "difficulty": "medium",
+      "tags": ["geography"]
+    },
+    {
+      "question": "How many continents are there?",
+      "potential_conflicts": [
+        "7 continents (North America, South America, Europe, Asia, Africa, Australia/Oceania, Antarctica)",
+        "6 continents (combining Europe and Asia as Eurasia)",
+        "5 continents (excluding Antarctica)"
+      ],
+      "expected_answer": "There are 7 continents according to the most common model",
+      "type": "potentially_conflicting",
+      "difficulty": "easy",
+      "tags": ["geography"]
+    }
+  ],
+  
+  "edge_cases": [
+    {
+      "question": "What is the capital of Antarctica?",
+      "expected_answer": "Antarctica does not have a capital city as it is not a country and has no permanent population",
+      "type": "edge_case",
+      "difficulty": "easy",
+      "tags": ["geography"]
+    },
+    {
+      "question": "Who is the king of France?",
+      "expected_answer": "France does not have a king; it has been a republic since 1870",
+      "type": "edge_case",
+      "difficulty": "easy",
+      "tags": ["politics", "history"]
+    },
+    {
+      "question": "What is the speed of darkness?",
+      "expected_answer": "Darkness doesn't have a speed; it's the absence of light. When light disappears, darkness appears at the speed of light",
+      "type": "edge_case",
+      "difficulty": "medium",
+      "tags": ["science", "physics"]
+    }
+  ],
+  
+  "ambiguous": [
+    {
+      "question": "What is the largest city?",
+      "clarification_needed": "Largest by area, population, or metropolitan area? In which country or globally?",
+      "potential_answers": {
+        "by_population": "Tokyo (metropolitan area)",
+        "by_area": "Sitka, Alaska (USA) or various cities depending on definition"
+      },
+      "type": "ambiguous",
+      "difficulty": "medium",
+      "tags": ["geography"]
+    },
+    {
+      "question": "When did the war end?",
+      "clarification_needed": "Which war? World War I, World War II, Vietnam War, etc.?",
+      "type": "ambiguous",
+      "difficulty": "easy",
+      "tags": ["history"]
+    }
+  ],
+  
+  "test_backtracking": [
+    {
+      "question": "What is the population of the capital of the country that won the 2022 FIFA World Cup?",
+      "expected_answer": "Buenos Aires, capital of Argentina (2022 World Cup winner), has a population of about 3 million",
+      "potential_errors": [
+        "Might retrieve outdated World Cup winner",
+        "Population figures may vary by source"
+      ],
+      "type": "multi-hop",
+      "difficulty": "medium",
+      "tags": ["sports", "geography", "demographics"]
+    },
+    {
+      "question": "Who was the CEO of Apple when the first iPad was released?",
+      "expected_answer": "Steve Jobs",
+      "potential_errors": [
+        "Confusion with later CEOs",
+        "Confusion with product release dates"
+      ],
+      "type": "multi-hop",
+      "difficulty": "medium",
+      "tags": ["technology", "business"]
+    }
+  ],
+  
+  "performance_test": [
+    {
+      "question": "List all the countries that border France and their capitals.",
+      "expected_facts": [
+        "Spain - Madrid",
+        "Andorra - Andorra la Vella",
+        "Monaco - Monaco",
+        "Italy - Rome",
+        "Switzerland - Bern",
+        "Germany - Berlin",
+        "Luxembourg - Luxembourg City",
+        "Belgium - Brussels"
+      ],
+      "type": "list_generation",
+      "difficulty": "medium",
+      "tags": ["geography"]
+    },
+    {
+      "question": "Name the first five elements of the periodic table and their atomic numbers.",
+      "expected_answer": "Hydrogen (1), Helium (2), Lithium (3), Beryllium (4), Boron (5)",
+      "type": "list_generation",
+      "difficulty": "easy",
+      "tags": ["science", "chemistry"]
+    }
+  ]
+}

@@ -1,0 +1,273 @@
+# Prometheus Configuration for ReAgent Monitoring
+# This configuration scrapes metrics from all ReAgent components
+
+global:
+  # How frequently to scrape targets
+  scrape_interval: 15s
+  
+  # How frequently to evaluate rules
+  evaluation_interval: 15s
+  
+  # Timeout for scraping
+  scrape_timeout: 10s
+  
+  # External labels to attach to all time series
+  external_labels:
+    monitor: 'reagent-prometheus'
+    environment: 'production'
+    
+# Rule files specify a glob pattern
+rule_files:
+  - '/etc/prometheus/rules/*.yml'
+  - '/etc/prometheus/alerting/*.yml'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+      # Timeout for sending alerts
+      timeout: 10s
+      
+      # Path prefix for the Alertmanager API
+      path_prefix: /
+      
+      # Scheme to use for requests
+      scheme: http
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    metrics_path: '/metrics'
+    
+  # ReAgent API metrics
+  - job_name: 'reagent-api'
+    static_configs:
+      - targets: 
+          - 'reagent_api:8000'
+          # Add more API instances as needed
+          # - 'reagent_api_2:8000'
+          # - 'reagent_api_3:8000'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    
+    # Add request headers if needed
+    params:
+      format: ['prometheus']
+      
+    # Relabel configurations
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '([^:]+):\d+'
+        replacement: '${1}'
+        
+    # Metric relabeling
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'python_gc_.*'
+        action: drop  # Drop Python GC metrics if not needed
+
+  # Celery Worker metrics
+  - job_name: 'reagent-workers'
+    static_configs:
+      - targets:
+          - 'reagent_worker:9540'  # Assuming workers expose metrics on port 9540
+          # - 'reagent_worker_2:9540'
+          # - 'reagent_worker_3:9540'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: worker_instance
+        regex: '([^:]+):\d+'
+        replacement: '${1}'
+
+  # Redis Exporter metrics
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis_exporter:9121']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    
+    params:
+      target: ['redis://redis:6379']
+      
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: redis_exporter:9121
+
+  # PostgreSQL Exporter metrics
+  - job_name: 'postgresql'
+    static_configs:
+      - targets: ['postgres_exporter:9187']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    
+    params:
+      target: ['postgres:5432']
+      
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: postgres_exporter:9187
+
+  # Elasticsearch Exporter metrics
+  - job_name: 'elasticsearch'
+    static_configs:
+      - targets: ['elasticsearch_exporter:9114']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    
+    params:
+      target: ['http://elasticsearch:9200']
+      
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: elasticsearch_exporter:9114
+
+  # Node Exporter for system metrics
+  - job_name: 'node'
+    static_configs:
+      - targets:
+          - 'node_exporter:9100'
+          # Add more node exporters for each host
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '([^:]+):\d+'
+        target_label: node
+        replacement: '${1}'
+
+  # Cadvisor for container metrics
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    
+    metric_relabel_configs:
+      # Only keep container metrics for our services
+      - source_labels: [container_label_com_docker_compose_service]
+        regex: 'reagent.*|redis|postgres|elasticsearch'
+        action: keep
+      
+      # Rename container labels
+      - source_labels: [container_label_com_docker_compose_service]
+        target_label: service
+      - source_labels: [container_label_com_docker_compose_project]
+        target_label: project
+
+  # Nginx metrics (if using nginx-prometheus-exporter)
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx_exporter:9113']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Custom ReAgent metrics endpoint
+  - job_name: 'reagent-custom'
+    static_configs:
+      - targets: ['reagent_api:8000']
+    metrics_path: '/api/v1/metrics/custom'
+    scrape_interval: 60s
+    
+    # Custom metrics might need authentication
+    bearer_token_file: /etc/prometheus/tokens/reagent_token
+    
+    metric_relabel_configs:
+      # Add reagent_ prefix to all custom metrics
+      - source_labels: [__name__]
+        regex: '(.*)'
+        target_label: __name__
+        replacement: 'reagent_custom_${1}'
+
+# Service discovery configurations
+# Kubernetes service discovery (if running in K8s)
+# - job_name: 'kubernetes-pods'
+#   kubernetes_sd_configs:
+#     - role: pod
+#   relabel_configs:
+#     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+#       action: keep
+#       regex: true
+#     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+#       action: replace
+#       target_label: __metrics_path__
+#       regex: (.+)
+#     - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+#       action: replace
+#       regex: ([^:]+)(?::\d+)?;(\d+)
+#       replacement: $1:$2
+#       target_label: __address__
+
+# Remote write configuration (for long-term storage)
+# remote_write:
+#   - url: "http://remote-storage:9201/write"
+#     remote_timeout: 30s
+#     queue_config:
+#       capacity: 10000
+#       max_shards: 5
+#       min_shards: 1
+#       max_samples_per_send: 5000
+#       batch_send_deadline: 5s
+#       min_backoff: 30ms
+#       max_backoff: 100ms
+
+# Remote read configuration
+# remote_read:
+#   - url: "http://remote-storage:9201/read"
+#     remote_timeout: 1m
+
+# Storage configuration
+storage:
+  tsdb:
+    # Directory for storing metrics
+    path: /prometheus
+    
+    # How long to keep data
+    retention:
+      time: 15d
+      size: 50GB
+    
+    # Disable local compaction if using remote storage
+    # no_lockfile: true
+
+# Web configuration
+web:
+  # Enable admin API
+  enable_admin_api: true
+  
+  # Enable lifecycle API
+  enable_lifecycle: true
+  
+  # Console templates and static files
+  console_template_path: /etc/prometheus/consoles
+  console_library_path: /etc/prometheus/console_libraries
+  
+  # External URL for Prometheus
+  external_url: http://prometheus.reagent.example.com
+
+# Tracing configuration
+# tracing:
+#   endpoint: "jaeger:14268"
+#   client_type: "http"
+#   sampling_factor: 0.1

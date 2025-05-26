@@ -1,0 +1,350 @@
+# Kubernetes Services for Redis
+# Provides both headless and regular services for Redis StatefulSet
+
+# Headless Service for Redis StatefulSet
+# This provides stable network identities for Redis pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-headless
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+    tier: cache
+    type: headless
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless service
+  publishNotReadyAddresses: true
+  selector:
+    app: redis
+    component: cache
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: redis
+    protocol: TCP
+  - name: metrics
+    port: 9121
+    targetPort: metrics
+    protocol: TCP
+    
+---
+# Regular Service for Redis
+# This provides a stable endpoint for client connections
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+    tier: cache
+    type: cluster-ip
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9121"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+    component: cache
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: redis
+    protocol: TCP
+  - name: metrics
+    port: 9121
+    targetPort: metrics
+    protocol: TCP
+  sessionAffinity: None
+  
+---
+# NodePort Service for Redis (optional - for debugging)
+# WARNING: Only use in development environments
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-nodeport
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+    tier: cache
+    type: nodeport
+    environment: development
+  annotations:
+    description: "NodePort service for Redis - development only"
+spec:
+  type: NodePort
+  selector:
+    app: redis
+    component: cache
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: redis
+    nodePort: 31379  # Fixed NodePort for consistency
+    protocol: TCP
+    
+---
+# Service for Redis Sentinel (if using Redis Sentinel for HA)
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis-sentinel
+    tier: cache
+spec:
+  type: ClusterIP
+  selector:
+    app: redis-sentinel
+    component: cache
+  ports:
+  - name: sentinel
+    port: 26379
+    targetPort: sentinel
+    protocol: TCP
+    
+---
+# NetworkPolicy for Redis
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-network-policy
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+      component: cache
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow connections from ReAgent API pods
+  - from:
+    - podSelector:
+        matchLabels:
+          app: reagent-api
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow connections from ReAgent Worker pods
+  - from:
+    - podSelector:
+        matchLabels:
+          app: reagent-worker
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow connections from Redis Sentinel
+  - from:
+    - podSelector:
+        matchLabels:
+          app: redis-sentinel
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow Prometheus to scrape metrics
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 9121
+  # Allow connections from other Redis pods (for replication)
+  - from:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  egress:
+  # Allow DNS lookups
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow connections to other Redis pods (for replication)
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+      
+---
+# ServiceMonitor for Prometheus Operator
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis-metrics
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+    prometheus: kube-prometheus
+spec:
+  selector:
+    matchLabels:
+      app: reagent
+      component: redis
+      type: cluster-ip
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+    scheme: http
+    honorLabels: true
+    metricRelabelings:
+    # Drop some high-cardinality metrics if needed
+    - sourceLabels: [__name__]
+      regex: 'redis_command_call_duration_seconds_bucket'
+      action: drop
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_name]
+      targetLabel: pod
+    - sourceLabels: [__meta_kubernetes_namespace]
+      targetLabel: namespace
+    - sourceLabels: [__meta_kubernetes_service_name]
+      targetLabel: service
+      
+---
+# Endpoints for custom Redis configurations
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: redis-custom-endpoints
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+subsets:
+  - addresses:
+      - ip: 10.0.0.1  # This will be automatically managed
+        nodeName: node-1
+        targetRef:
+          kind: Pod
+          name: redis-0
+          namespace: reagent
+    ports:
+      - name: redis
+        port: 6379
+        protocol: TCP
+        
+---
+# Service for Redis Cluster (if using Redis Cluster mode)
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cluster
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis-cluster
+    tier: cache
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless for cluster mode
+  selector:
+    app: redis-cluster
+    component: cache
+  ports:
+  - name: client
+    port: 6379
+    targetPort: client
+    protocol: TCP
+  - name: gossip
+    port: 16379
+    targetPort: gossip
+    protocol: TCP
+    
+---
+# ConfigMap for Redis connection strings
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-connection
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+data:
+  # Connection strings for different scenarios
+  REDIS_URL: "redis://redis-service.reagent.svc.cluster.local:6379/0"
+  REDIS_SENTINEL_URL: "redis-sentinel://redis-sentinel.reagent.svc.cluster.local:26379/mymaster"
+  REDIS_CLUSTER_URL: "redis://redis-cluster.reagent.svc.cluster.local:6379"
+  
+  # Redis configuration for clients
+  redis-client-config.yaml: |
+    redis:
+      standalone:
+        host: redis-service.reagent.svc.cluster.local
+        port: 6379
+        database: 0
+        password: ""  # Set via secret in production
+        timeout: 5000
+        connectionTimeout: 2000
+        maxRetries: 3
+        
+      pool:
+        maxTotal: 50
+        maxIdle: 10
+        minIdle: 5
+        maxWaitMillis: 2000
+        testOnBorrow: true
+        testWhileIdle: true
+        timeBetweenEvictionRunsMillis: 30000
+        
+      cluster:
+        enabled: false
+        nodes:
+          - redis-cluster-0.redis-cluster.reagent.svc.cluster.local:6379
+          - redis-cluster-1.redis-cluster.reagent.svc.cluster.local:6379
+          - redis-cluster-2.redis-cluster.reagent.svc.cluster.local:6379
+        maxRedirects: 3
+        
+      sentinel:
+        enabled: false
+        master: mymaster
+        nodes:
+          - redis-sentinel.reagent.svc.cluster.local:26379
+        password: ""  # Set via secret
+        
+  # Python Redis client configuration
+  redis-py-config.py: |
+    REDIS_CONFIG = {
+        'host': 'redis-service.reagent.svc.cluster.local',
+        'port': 6379,
+        'db': 0,
+        'password': None,  # Set from environment
+        'socket_timeout': 5,
+        'socket_connect_timeout': 2,
+        'socket_keepalive': True,
+        'socket_keepalive_options': {},
+        'connection_pool_kwargs': {
+            'max_connections': 50,
+            'retry_on_timeout': True,
+            'retry_on_error': [ConnectionError, TimeoutError],
+            'retry': Retry(ExponentialBackoff(), 3)
+        }
+    }

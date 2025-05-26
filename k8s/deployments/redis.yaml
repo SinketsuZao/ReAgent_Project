@@ -1,0 +1,434 @@
+# Kubernetes StatefulSet for Redis
+# Using StatefulSet for stable network identity and persistent storage
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+    version: "7.0"
+spec:
+  serviceName: redis-headless
+  replicas: 1  # For production, consider Redis Sentinel or Cluster mode
+  selector:
+    matchLabels:
+      app: redis
+      component: cache
+  template:
+    metadata:
+      labels:
+        app: redis
+        component: cache
+        version: "7.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: reagent-sa
+      
+      # Security context for pod
+      securityContext:
+        fsGroup: 999
+        runAsUser: 999
+        runAsNonRoot: true
+        
+      containers:
+      # Main Redis container
+      - name: redis
+        image: redis:7.0-alpine
+        imagePullPolicy: IfNotPresent
+        command:
+        - redis-server
+        - /etc/redis/redis.conf
+        
+        ports:
+        - name: redis
+          containerPort: 6379
+          protocol: TCP
+          
+        # Environment variables
+        env:
+        - name: REDIS_REPLICATION_MODE
+          value: "master"
+        - name: ALLOW_EMPTY_PASSWORD
+          value: "yes"  # For development; use password in production
+          
+        # Resource limits
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+            
+        # Health checks
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+          
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+          
+        # Volume mounts
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+        - name: redis-config
+          mountPath: /etc/redis
+          readOnly: true
+          
+        # Security context for container
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - SETUID
+            - SETGID
+            
+      # Redis Exporter sidecar for Prometheus metrics
+      - name: redis-exporter
+        image: oliver006/redis_exporter:v1.55.0
+        imagePullPolicy: IfNotPresent
+        
+        ports:
+        - name: metrics
+          containerPort: 9121
+          protocol: TCP
+          
+        env:
+        - name: REDIS_ADDR
+          value: "redis://localhost:6379"
+        - name: REDIS_EXPORTER_LOG_FORMAT
+          value: "json"
+          
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+            
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: metrics
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 59000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            
+      # Node selector
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
+        
+      # Tolerations
+      tolerations:
+      - key: "workload"
+        operator: "Equal"
+        value: "database"
+        effect: "NoSchedule"
+        
+      # Pod affinity
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - redis
+            topologyKey: kubernetes.io/hostname
+            
+      # Volumes
+      volumes:
+      - name: redis-config
+        configMap:
+          name: redis-config
+          
+  # Volume claim templates for persistent storage
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+      labels:
+        app: redis
+        component: cache
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      storageClassName: fast-ssd  # Use appropriate storage class
+      
+---
+# ConfigMap for Redis configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+data:
+  redis.conf: |
+    # Redis configuration for ReAgent
+    
+    # Network
+    bind 0.0.0.0
+    protected-mode no
+    port 6379
+    tcp-backlog 511
+    timeout 0
+    tcp-keepalive 300
+    
+    # General
+    daemonize no
+    pidfile /var/run/redis_6379.pid
+    loglevel notice
+    logfile ""
+    databases 16
+    always-show-logo no
+    set-proc-title yes
+    proc-title-template "{title} {listen-addr} {server-mode}"
+    
+    # Snapshotting
+    save 900 1
+    save 300 10
+    save 60 10000
+    stop-writes-on-bgsave-error yes
+    rdbcompression yes
+    rdbchecksum yes
+    dbfilename dump.rdb
+    rdb-del-sync-files no
+    dir /data
+    
+    # Replication
+    replica-serve-stale-data yes
+    replica-read-only yes
+    repl-diskless-sync no
+    repl-diskless-sync-delay 5
+    repl-diskless-load disabled
+    repl-ping-replica-period 10
+    repl-timeout 60
+    repl-disable-tcp-nodelay no
+    repl-backlog-size 1mb
+    repl-backlog-ttl 3600
+    replica-priority 100
+    
+    # Security
+    # requirepass <password>  # Set in production
+    # masterauth <master-password>
+    
+    # Clients
+    maxclients 10000
+    
+    # Memory management
+    maxmemory 1gb
+    maxmemory-policy allkeys-lru
+    maxmemory-samples 5
+    replica-ignore-maxmemory yes
+    
+    # Lazy freeing
+    lazyfree-lazy-eviction no
+    lazyfree-lazy-expire no
+    lazyfree-lazy-server-del no
+    replica-lazy-flush no
+    lazyfree-lazy-user-del no
+    lazyfree-lazy-user-flush no
+    
+    # Threading
+    io-threads 4
+    io-threads-do-reads no
+    
+    # Kernel OOM control
+    oom-score-adj no
+    oom-score-adj-values 0 200 800
+    
+    # Kernel transparent hugepage control
+    disable-thp yes
+    
+    # Append only mode
+    appendonly yes
+    appendfilename "appendonly.aof"
+    appenddirname "appendonlydir"
+    appendfsync everysec
+    no-appendfsync-on-rewrite no
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    aof-load-truncated yes
+    aof-use-rdb-preamble yes
+    aof-timestamp-enabled no
+    
+    # Slow log
+    slowlog-log-slower-than 10000
+    slowlog-max-len 128
+    
+    # Latency monitor
+    latency-monitor-threshold 0
+    
+    # Event notification
+    notify-keyspace-events "Ex"
+    
+    # Advanced config
+    hash-max-listpack-entries 512
+    hash-max-listpack-value 64
+    list-max-listpack-size -2
+    list-compress-depth 0
+    set-max-intset-entries 512
+    zset-max-listpack-entries 128
+    zset-max-listpack-value 64
+    hll-sparse-max-bytes 3000
+    stream-node-max-bytes 4096
+    stream-node-max-entries 100
+    
+    # Active rehashing
+    activerehashing yes
+    
+    # Client output buffer limits
+    client-output-buffer-limit normal 0 0 0
+    client-output-buffer-limit replica 256mb 64mb 60
+    client-output-buffer-limit pubsub 32mb 8mb 60
+    
+    # Client query buffer limit
+    client-query-buffer-limit 1gb
+    
+    # Protocol buffer limit
+    proto-max-bulk-len 512mb
+    
+    # Frequency of rehashing the main dictionary
+    hz 10
+    dynamic-hz yes
+    
+    # AOF rewrite incremental fsync
+    aof-rewrite-incremental-fsync yes
+    
+    # RDB saves incremental fsync
+    rdb-save-incremental-fsync yes
+    
+    # Enable active defragmentation
+    activedefrag no
+    active-defrag-ignore-bytes 100mb
+    active-defrag-threshold-lower 10
+    active-defrag-threshold-upper 100
+    active-defrag-cycle-min 1
+    active-defrag-cycle-max 25
+    active-defrag-max-scan-fields 1000
+    
+    # Jemalloc background thread
+    jemalloc-bg-thread yes
+    
+---
+# Headless Service for StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-headless
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+spec:
+  clusterIP: None
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: redis
+  selector:
+    app: redis
+    component: cache
+    
+---
+# Regular Service for Redis
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+spec:
+  type: ClusterIP
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: redis
+    protocol: TCP
+  - name: metrics
+    port: 9121
+    targetPort: metrics
+    protocol: TCP
+  selector:
+    app: redis
+    component: cache
+    
+---
+# PodDisruptionBudget for Redis
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-pdb
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: redis
+      component: cache
+      
+---
+# ServiceMonitor for Prometheus (if using Prometheus Operator)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis-metrics
+  namespace: reagent
+  labels:
+    app: reagent
+    component: redis
+    prometheus: kube-prometheus
+spec:
+  selector:
+    matchLabels:
+      app: reagent
+      component: redis
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+    scheme: http
